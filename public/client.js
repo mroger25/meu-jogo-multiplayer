@@ -3,62 +3,126 @@ document.addEventListener("DOMContentLoaded", () => {
   const canvas = document.getElementById("game-canvas");
   const ctx = canvas.getContext("2d");
 
-  // Ajusta o canvas para o tamanho da janela
-  canvas.width = 40;
-  canvas.height = 40;
+  // --- Estado Local do Cliente ---
+  let jogadores = new Map();
+  let comida = new Map();
+  let meuSocketId = null;
+  const GAME_TICK_MS = 50;
 
-  // Guarda o estado do "meu" jogador
-  let meuJogador = null;
+  // --- Estado de Input Local ---
+  const inputs = { ArrowUp: !1, ArrowDown: !1, ArrowLeft: !1, ArrowRight: !1 };
 
-  // --- 1. Enviar Input ---
+  // --- 1. Capturar Input ---
+  const teclasPermitidas = new Set(Object.keys(inputs));
 
   document.addEventListener("keydown", (e) => {
-    socket.emit("updateDirecao", e.key);
+    if (teclasPermitidas.has(e.key)) {
+      inputs[e.key] = !0;
+      e.preventDefault();
+    }
   });
 
-  // --- 2. Receber Estado e Desenhar ---
+  document.addEventListener("keyup", (e) => {
+    if (teclasPermitidas.has(e.key)) {
+      inputs[e.key] = !1;
+      e.preventDefault();
+    }
+  });
 
-  // A função principal de desenho
-  function desenhar(estado) {
-    // Limpa o canvas
+  // --- 2. Enviar Inputs em Intervalo Fixo ---
+  setInterval(() => {
+    socket.emit("updateInputs", inputs);
+  }, GAME_TICK_MS);
+
+  // --- 3. Receber Estado ---
+
+  socket.on("connect", () => {
+    meuSocketId = socket.id;
+  });
+
+  socket.on("estadoInicial", (estado) => {
+    console.log("Recebi estado inicial!");
+    canvas.width = estado.config.canvasLargura;
+    canvas.height = estado.config.canvasAltura;
+    jogadores.clear();
+    estado.jogadores.forEach((j) => {
+      jogadores.set(j.id, j);
+    });
+    comida.clear();
+    estado.comida.forEach((c) => {
+      comida.set(c.id, c);
+    });
+  });
+
+  socket.on("estadoDelta", (mudancas) => {
+    const tipos = {
+      jogadorNovo: (m) => {
+        jogadores.set(m.id, m);
+      },
+      jogadorMoveu: (m, j) => {
+        if (j) {
+          j.x = m.x;
+          j.y = m.y;
+        }
+      },
+      jogadorDesconectou: (m) => {
+        jogadores.delete(m.id);
+      },
+      comidaAdicionada: (m) => {
+        comida.set(m.id, m);
+      },
+      comidaRemovida: (m) => {
+        comida.delete(m.id);
+      },
+      pontuacaoAtualizada: (m, j) => {
+        if (j) {
+          j.pontos = m.pontos;
+        }
+      },
+    };
+    mudancas.forEach((m) => {
+      const j = jogadores.get(m.id);
+      if (tipos[m.tipo]) {
+        tipos[m.tipo](m, j);
+      }
+    });
+  });
+
+  // --- 4. Desenhar (Render Loop) ---
+  function desenhar() {
+    if (canvas.width === 0 || canvas.height === 0) return;
+    const meuJogador = jogadores.get(meuSocketId);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // --- LÓGICA DA CÂMERA ---
-    // Encontra o "meu" jogador no estado
-    meuJogador = estado.jogadores.find((j) => j.id === socket.id);
-
-    // Salva o estado do canvas (antes de mover a câmera)
     ctx.save();
-
     if (meuJogador) {
-      // Move a origem (0,0) do canvas para o centro da tela
       ctx.translate(canvas.width / 2, canvas.height / 2);
-
-      // Centraliza a câmera no jogador
-      // (Move o "mundo" na direção oposta do jogador)
       ctx.translate(-meuJogador.x, -meuJogador.y);
     }
 
-    // --- Desenhar o Jogo (com a câmera transladada) ---
-
-    // Desenhar a "comida"
-    estado.comida.forEach((itemComida) => {
+    for (const itemComida of comida.values()) {
       ctx.fillStyle = itemComida.cor;
       ctx.fillRect(itemComida.x, itemComida.y, 1, 1);
-    });
-
-    // Desenhar os "jogadores"
-    estado.jogadores.forEach((jogador) => {
+    }
+    for (const jogador of jogadores.values()) {
       ctx.fillStyle = jogador.cor;
       ctx.fillRect(jogador.x, jogador.y, 1, 1);
-    });
+    }
 
-    // Restaura o estado do canvas (remove a translação da câmera)
     ctx.restore();
+
+    if (meuJogador) {
+      ctx.fillStyle = "white";
+      ctx.font = "3px Arial";
+      ctx.textAlign = "left";
+      ctx.textBaseLine = "top";
+      ctx.fillText(`Pontos: ${meuJogador.pontos}`, 2, 2);
+    }
   }
 
-  // Ouve o evento do servidor
-  socket.on("estadoJogo", (estado) => {
-    requestAnimationFrame(() => desenhar(estado));
-  });
+  function loopRenderizacao() {
+    desenhar();
+    requestAnimationFrame(loopRenderizacao);
+  }
+
+  loopRenderizacao();
 });
