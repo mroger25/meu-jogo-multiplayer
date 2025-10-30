@@ -20,9 +20,22 @@ const CLIENT_CANVAS_ALTURA = 40;
 const VIEWPORT_LARGURA = CLIENT_CANVAS_LARGURA + 20;
 const VIEWPORT_ALTURA = CLIENT_CANVAS_ALTURA + 20;
 
+// --- Otimização de Grid (Spatial Hashing) ---
+const GRID_CELL_SIZE = VIEWPORT_LARGURA;
+let grid = new Map();
+
 let jogadores = new Map();
 let comida = new Map();
 let mudancas = [];
+
+// --- LOG: Adicionado ---
+function logInfo(mensagem) {
+  console.log(`[INFO] ${new Date().toLocaleTimeString()} - ${mensagem}`);
+}
+function logDebug(mensagem) {
+  // Comente esta linha para reduzir logs "barulhentos"
+  console.log(`[DEBUG] ${new Date().toLocaleTimeString()} - ${mensagem}`);
+}
 
 function posAleatoria() {
   return {
@@ -30,6 +43,54 @@ function posAleatoria() {
     y: Math.floor(Math.random() * MUNDO_ALTURA),
   };
 }
+
+// --- Funções Auxiliares do Grid ---
+function getGridKey(x, y) {
+  const cellX = Math.floor(x / GRID_CELL_SIZE);
+  const cellY = Math.floor(y / GRID_CELL_SIZE);
+  return `${cellX}:${cellY}`;
+}
+function addToGrid(entity) {
+  const key = getGridKey(entity.x, entity.y);
+  if (!grid.has(key)) {
+    grid.set(key, new Set());
+  }
+  grid.get(key).add(entity);
+  entity.gridKey = key;
+}
+function removeFromGrid(entity) {
+  if (entity.gridKey && grid.has(entity.gridKey)) {
+    grid.get(entity.gridKey).delete(entity);
+    if (grid.get(entity.gridKey).size === 0) {
+      grid.delete(entity.gridKey);
+    }
+  }
+  entity.gridKey = null;
+}
+function updateGridPosition(entity) {
+  const newKey = getGridKey(entity.x, entity.y);
+  if (entity.gridKey !== newKey) {
+    removeFromGrid(entity);
+    addToGrid(entity);
+  }
+}
+function getEntitiesInVicinity(entity) {
+  const entities = new Set();
+  const cellX = Math.floor(entity.x / GRID_CELL_SIZE);
+  const cellY = Math.floor(entity.y / GRID_CELL_SIZE);
+  for (let x = cellX - 1; x <= cellX + 1; x++) {
+    for (let y = cellY - 1; y <= cellY + 1; y++) {
+      const key = `${x}:${y}`;
+      if (grid.has(key)) {
+        for (const e of grid.get(key)) {
+          entities.add(e);
+        }
+      }
+    }
+  }
+  return entities;
+}
+// --- Fim das Funções do Grid ---
 
 function gerarComida(quantidade) {
   for (let i = 0; i < quantidade; i++) {
@@ -40,6 +101,7 @@ function gerarComida(quantidade) {
       cor: `hsl(${Math.random() * 360}, 100%, 50%)`,
     };
     comida.set(id, novaComida);
+    addToGrid(novaComida);
     mudancas.push({ tipo: "comidaAdicionada", ...novaComida });
   }
 }
@@ -57,6 +119,7 @@ function gameLoop() {
     if (jogador.inputs.ArrowDown) dy += 1;
     if (jogador.inputs.ArrowLeft) dx -= 1;
     if (jogador.inputs.ArrowRight) dx += 1;
+
     if (dx !== 0 || dy !== 0) {
       jogador.x = Math.max(
         0,
@@ -66,7 +129,7 @@ function gameLoop() {
         0,
         Math.min(jogador.y + dy * VELOCIDADE_JOGADOR, MUNDO_ALTURA)
       );
-
+      updateGridPosition(jogador);
       mudancas.push({
         tipo: "jogadorMoveu",
         id: jogador.id,
@@ -74,10 +137,19 @@ function gameLoop() {
         y: jogador.y,
       });
 
-      for (const [comidaId, itemComida] of comida) {
+      const inVicinity = getEntitiesInVicinity(jogador);
+      for (const entity of inVicinity) {
+        if (!comida.has(entity.id)) continue;
+        const itemComida = entity;
         if (checarColisao(jogador, itemComida)) {
-          comida.delete(comidaId);
-          mudancas.push({ tipo: "comidaRemovida", id: comidaId });
+          comida.delete(itemComida.id);
+          removeFromGrid(itemComida);
+          mudancas.push({
+            tipo: "comidaRemovida",
+            id: itemComida.id,
+            x: itemComida.x,
+            y: itemComida.y,
+          });
           jogador.pontos += 1;
           mudancas.push({
             tipo: "pontuacaoAtualizada",
@@ -90,21 +162,42 @@ function gameLoop() {
       }
     }
   }
-  if (mudancas.length === 0) return;
-  for (const [jogadorId, jogador] of jogadores) {
-    const minX = jogador.x - VIEWPORT_LARGURA / 2;
-    const maxX = jogador.x + VIEWPORT_LARGURA / 2;
-    const minY = jogador.y - VIEWPORT_ALTURA / 2;
-    const maxY = jogador.y + VIEWPORT_ALTURA / 2;
 
-    const mudancasVisiveis = mudancas.filter((m) => {
-      if (m.tipo === "pontuacaoAtualizada") return true;
+  if (mudancas.length === 0) {
+    return;
+  }
 
-      return m.x !== undefined && m.y !== undefined
-        ? m.x >= minX && m.x <= maxX && m.y >= minY && m.y <= maxY
-        : true;
-    });
+  const mudancasPorJogador = new Map();
 
+  function getOrCreateMudancas(jogadorId) {
+    if (!mudancasPorJogador.has(jogadorId)) {
+      mudancasPorJogador.set(jogadorId, []);
+    }
+    return mudancasPorJogador.get(jogadorId);
+  }
+
+  for (const m of mudancas) {
+    if (m.tipo === "pontuacaoAtualizada") {
+      const mudancasDoJogador = getOrCreateMudancas(m.id);
+      mudancasDoJogador.push(m);
+    } else if (m.x !== undefined && m.y !== undefined) {
+      const playersInVicinity = getEntitiesInVicinity(m);
+      for (const entity of playersInVicinity) {
+        if (!jogadores.has(entity.id)) continue;
+        const jogador = entity;
+        const minX = jogador.x - VIEWPORT_LARGURA / 2;
+        const maxX = jogador.x + VIEWPORT_LARGURA / 2;
+        const minY = jogador.y - VIEWPORT_ALTURA / 2;
+        const maxY = jogador.y + VIEWPORT_ALTURA / 2;
+        if (m.x >= minX && m.x <= maxX && m.y >= minY && m.y <= maxY) {
+          const mudancasDoJogador = getOrCreateMudancas(jogador.id);
+          mudancasDoJogador.push(m);
+        }
+      }
+    }
+  }
+
+  for (const [jogadorId, mudancasVisiveis] of mudancasPorJogador) {
     if (mudancasVisiveis.length > 0) {
       const socket = io.sockets.sockets.get(jogadorId);
       if (socket) {
@@ -116,7 +209,7 @@ function gameLoop() {
 }
 
 io.on("connection", (socket) => {
-  console.log(`Jogador ${socket.id} conectou.`);
+  logInfo(`Jogador ${socket.id} conectou.`); // --- LOG: Modificado ---
 
   const novoJogador = {
     id: socket.id,
@@ -127,6 +220,7 @@ io.on("connection", (socket) => {
   };
 
   jogadores.set(socket.id, novoJogador);
+  addToGrid(novoJogador);
 
   socket.emit("estadoInicial", {
     jogadores: Array.from(jogadores.values()),
@@ -134,6 +228,10 @@ io.on("connection", (socket) => {
     config: {
       canvasLargura: CLIENT_CANVAS_LARGURA,
       canvasAltura: CLIENT_CANVAS_ALTURA,
+      // --- ADIÇÃO NECESSÁRIA para PREDIÇÃO ---
+      mundoLargura: MUNDO_LARGURA,
+      mundoAltura: MUNDO_ALTURA,
+      velocidadeJogador: VELOCIDADE_JOGADOR,
     },
   });
 
@@ -145,26 +243,35 @@ io.on("connection", (socket) => {
   socket.on("updateInputs", (inputs) => {
     const jogador = jogadores.get(socket.id);
     if (jogador) {
-      jogador.inputs = inputs;
+      // Validação básica
+      if (typeof inputs === "object" && inputs !== null) {
+        jogador.inputs = inputs;
+      } else {
+        logInfo(`Inputs inválidos recebidos de ${socket.id}`);
+      }
     }
   });
 
   socket.on("disconnect", () => {
-    console.log(`Jogador ${socket.id} desconectou.`);
-    jogadores.delete(socket.id);
-    mudancas.push({
-      tipo: "jogadorDesconectou",
-      id: socket.id,
-    });
+    logInfo(`Jogador ${socket.id} desconectou.`); // --- LOG: Modificado ---
+    const jogador = jogadores.get(socket.id);
+    if (jogador) {
+      removeFromGrid(jogador);
+      jogadores.delete(socket.id);
+      mudancas.push({
+        tipo: "jogadorDesconectou",
+        id: socket.id,
+        x: jogador.x,
+        y: jogador.y,
+      });
+    }
   });
 });
 
 app.use(express.static("public"));
 
 server.listen(PORTA, () => {
-  console.log(
-    `Servidor rodando na porta ${PORTA}. Abra http://localhost:${PORTA}`
-  );
+  logInfo(`Servidor rodando na porta ${PORTA}. Abra http://localhost:${PORTA}`); // --- LOG: Modificado ---
   gerarComida(QTD_COMIDA_INICIAL);
   setInterval(() => gameLoop(), GAME_TICK_MS);
 });
