@@ -20,21 +20,23 @@ const CLIENT_CANVAS_ALTURA = 40;
 const VIEWPORT_LARGURA = CLIENT_CANVAS_LARGURA + 20;
 const VIEWPORT_ALTURA = CLIENT_CANVAS_ALTURA + 20;
 
-// --- Otimização de Grid (Spatial Hashing) ---
 const GRID_CELL_SIZE = VIEWPORT_LARGURA;
 let grid = new Map();
 
 let jogadores = new Map();
 let comida = new Map();
-let mudancas = [];
+// --- CORREÇÃO (MUDANÇA 1) ---
+// 'mudancas' foi removido daqui.
+// 'eventosGlobais' é a nova fila segura para conexões/desconexões.
+let eventosGlobais = [];
+// --- FIM DA CORREÇÃO ---
 
-// --- LOG: Adicionado ---
 function logInfo(mensagem) {
   console.log(`[INFO] ${new Date().toLocaleTimeString()} - ${mensagem}`);
 }
 function logDebug(mensagem) {
   // Comente esta linha para reduzir logs "barulhentos"
-  console.log(`[DEBUG] ${new Date().toLocaleTimeString()} - ${mensagem}`);
+  // console.log(`[DEBUG] ${new Date().toLocaleTimeString()} - ${mensagem}`);
 }
 
 function posAleatoria() {
@@ -44,7 +46,7 @@ function posAleatoria() {
   };
 }
 
-// --- Funções Auxiliares do Grid ---
+// --- Funções Auxiliares do Grid (Sem mudanças) ---
 function getGridKey(x, y) {
   const cellX = Math.floor(x / GRID_CELL_SIZE);
   const cellY = Math.floor(y / GRID_CELL_SIZE);
@@ -93,6 +95,7 @@ function getEntitiesInVicinity(entity) {
 // --- Fim das Funções do Grid ---
 
 function gerarComida(quantidade) {
+  logInfo(`Gerando ${quantidade} novas comidas.`);
   for (let i = 0; i < quantidade; i++) {
     const id = `comida_${Date.now()}_${i}`;
     const novaComida = {
@@ -102,7 +105,8 @@ function gerarComida(quantidade) {
     };
     comida.set(id, novaComida);
     addToGrid(novaComida);
-    mudancas.push({ tipo: "comidaAdicionada", ...novaComida });
+    // Adiciona na fila global para ser processado no próximo tick
+    eventosGlobais.push({ tipo: "comidaAdicionada", ...novaComida });
   }
 }
 
@@ -111,6 +115,18 @@ function checarColisao(obj1, obj2) {
 }
 
 function gameLoop() {
+  logDebug("Iniciando Game Loop Tick");
+
+  // --- CORREÇÃO (MUDANÇA 2) ---
+  // 'mudancas' agora é uma variável LOCAL,
+  // que começa consumindo a fila de eventos globais.
+  let mudancas = [];
+  if (eventosGlobais.length > 0) {
+    mudancas.push(...eventosGlobais);
+    eventosGlobais = [];
+  }
+  // --- FIM DA CORREÇÃO ---
+
   for (const [jogadorId, jogador] of jogadores) {
     if (!jogador.inputs) continue;
     let dx = 0;
@@ -142,8 +158,10 @@ function gameLoop() {
         if (!comida.has(entity.id)) continue;
         const itemComida = entity;
         if (checarColisao(jogador, itemComida)) {
+          logInfo(`Jogador ${jogador.id} comeu ${itemComida.id}`);
           comida.delete(itemComida.id);
           removeFromGrid(itemComida);
+          // Adiciona o 'x' e 'y' para a "comida fantasma"
           mudancas.push({
             tipo: "comidaRemovida",
             id: itemComida.id,
@@ -164,9 +182,11 @@ function gameLoop() {
   }
 
   if (mudancas.length === 0) {
+    logDebug("Fim do Game Loop Tick (Sem mudanças)");
     return;
   }
 
+  logDebug(`Processando ${mudancas.length} mudanças para enviar...`);
   const mudancasPorJogador = new Map();
 
   function getOrCreateMudancas(jogadorId) {
@@ -182,13 +202,24 @@ function gameLoop() {
       mudancasDoJogador.push(m);
     } else if (m.x !== undefined && m.y !== undefined) {
       const playersInVicinity = getEntitiesInVicinity(m);
+
       for (const entity of playersInVicinity) {
         if (!jogadores.has(entity.id)) continue;
-        const jogador = entity;
+        const jogador = entity; // 'jogador' é o *receptor* da mensagem
+
+        // --- NOVO (OTIMIZAÇÃO) ---
+        // Não envia um evento para o jogador que o causou
+        // (ex: não diga a J1 que J1 se moveu)
+        if (jogador.id === m.id) {
+          continue;
+        }
+        // --- FIM DA OTIMIZAÇÃO ---
+
         const minX = jogador.x - VIEWPORT_LARGURA / 2;
         const maxX = jogador.x + VIEWPORT_LARGURA / 2;
         const minY = jogador.y - VIEWPORT_ALTURA / 2;
         const maxY = jogador.y + VIEWPORT_ALTURA / 2;
+
         if (m.x >= minX && m.x <= maxX && m.y >= minY && m.y <= maxY) {
           const mudancasDoJogador = getOrCreateMudancas(jogador.id);
           mudancasDoJogador.push(m);
@@ -201,15 +232,24 @@ function gameLoop() {
     if (mudancasVisiveis.length > 0) {
       const socket = io.sockets.sockets.get(jogadorId);
       if (socket) {
+        logDebug(
+          `Enviando ${mudancasVisiveis.length} deltas para ${jogadorId}`
+        );
         socket.emit("estadoDelta", mudancasVisiveis);
       }
     }
   }
-  mudancas = [];
+
+  // --- CORREÇÃO (MUDANÇA 3) ---
+  // A linha 'mudancas = [];' foi REMOVIDA daqui,
+  // pois 'mudancas' é agora uma variável local.
+  // --- FIM DA CORREÇÃO ---
+
+  logDebug("Fim do Game Loop Tick (Mudanças enviadas)");
 }
 
 io.on("connection", (socket) => {
-  logInfo(`Jogador ${socket.id} conectou.`); // --- LOG: Modificado ---
+  logInfo(`Jogador ${socket.id} conectou.`);
 
   const novoJogador = {
     id: socket.id,
@@ -222,28 +262,33 @@ io.on("connection", (socket) => {
   jogadores.set(socket.id, novoJogador);
   addToGrid(novoJogador);
 
+  logInfo(`Enviando 'estadoInicial' para ${socket.id}`);
   socket.emit("estadoInicial", {
+    // Envia a lista COMPLETA de jogadores atuais (incluindo os antigos)
     jogadores: Array.from(jogadores.values()),
     comida: Array.from(comida.values()),
     config: {
       canvasLargura: CLIENT_CANVAS_LARGURA,
       canvasAltura: CLIENT_CANVAS_ALTURA,
-      // --- ADIÇÃO NECESSÁRIA para PREDIÇÃO ---
       mundoLargura: MUNDO_LARGURA,
       mundoAltura: MUNDO_ALTURA,
       velocidadeJogador: VELOCIDADE_JOGADOR,
     },
   });
 
-  mudancas.push({
+  // --- CORREÇÃO (MUDANÇA 4) ---
+  // Adiciona o evento 'jogadorNovo' na fila global segura,
+  // em vez de na variável 'mudancas'
+  eventosGlobais.push({
     tipo: "jogadorNovo",
     ...novoJogador,
   });
+  // --- FIM DA CORREÇÃO ---
 
   socket.on("updateInputs", (inputs) => {
+    logDebug(`Recebido updateInputs de ${socket.id}`);
     const jogador = jogadores.get(socket.id);
     if (jogador) {
-      // Validação básica
       if (typeof inputs === "object" && inputs !== null) {
         jogador.inputs = inputs;
       } else {
@@ -253,17 +298,21 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    logInfo(`Jogador ${socket.id} desconectou.`); // --- LOG: Modificado ---
+    logInfo(`Jogador ${socket.id} desconectou.`);
     const jogador = jogadores.get(socket.id);
     if (jogador) {
       removeFromGrid(jogador);
       jogadores.delete(socket.id);
-      mudancas.push({
+
+      // --- CORREÇÃO (MUDANÇA 5) ---
+      // Adiciona o evento 'jogadorDesconectou' na fila global segura
+      eventosGlobais.push({
         tipo: "jogadorDesconectou",
         id: socket.id,
         x: jogador.x,
         y: jogador.y,
       });
+      // --- FIM DA CORREÇÃO ---
     }
   });
 });
@@ -271,7 +320,25 @@ io.on("connection", (socket) => {
 app.use(express.static("public"));
 
 server.listen(PORTA, () => {
-  logInfo(`Servidor rodando na porta ${PORTA}. Abra http://localhost:${PORTA}`); // --- LOG: Modificado ---
+  logInfo(`Servidor rodando na porta ${PORTA}. Abra http://localhost:${PORTA}`);
   gerarComida(QTD_COMIDA_INICIAL);
   setInterval(() => gameLoop(), GAME_TICK_MS);
+
+  // Loop do Placar (Correto, sem mudanças)
+  setInterval(() => {
+    const jogadoresArray = Array.from(jogadores.values());
+    jogadoresArray.sort((a, b) => b.pontos - a.pontos);
+    const top10 = jogadoresArray.slice(0, 10).map((j) => {
+      return {
+        id: j.id,
+        pontos: j.pontos,
+        x: j.x,
+        y: j.y,
+      };
+    });
+    io.emit("leaderboardUpdate", top10);
+    logDebug(
+      `Placar de líderes enviado para ${jogadoresArray.length} jogadores.`
+    );
+  }, 1000);
 });

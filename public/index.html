@@ -10,8 +10,12 @@
   <body>
     <div id="game-hud">
       <div id="score-display">Pontos: 0</div>
+      <div id="leaderboard">
+        <h3>Top 10 Jogadores</h3>
+        <ol id="leaderboard-list"></ol>
       </div>
-    
+    </div>
+
     <canvas id="game-canvas"></canvas>
 
     <script src="/socket.io/socket.io.js"></script>

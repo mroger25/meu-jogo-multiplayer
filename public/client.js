@@ -4,11 +4,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const ctx = canvas.getContext("2d");
 
   const scoreDisplay = document.getElementById("score-display");
+  // NOVO: Referência para a lista do placar
+  const leaderboardList = document.getElementById("leaderboard-list");
 
   let jogadores = new Map();
   let comida = new Map();
   let meuSocketId = null;
-  const GAME_TICK_MS = 50; // Tem que ser o mesmo valor do servidor
+  const GAME_TICK_MS = 50;
 
   let config = {
     mundoLargura: 2000,
@@ -16,7 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
     velocidadeJogador: 1,
   };
 
-  const LERP_FACTOR = 0.2; // Fator de interpolação
+  const LERP_FACTOR = 0.2;
 
   const inputs = { ArrowUp: !1, ArrowDown: !1, ArrowLeft: !1, ArrowRight: !1 };
 
@@ -40,6 +42,9 @@ document.addEventListener("DOMContentLoaded", () => {
   socket.on("connect", () => {
     meuSocketId = socket.id;
     console.log(`[CLIENT] Conectado ao servidor com ID: ${meuSocketId}`);
+
+    // REMOVIDO: Log de Posição (substituído pelo placar)
+    // setInterval(() => { ... }, 1000);
   });
 
   socket.on("estadoInicial", (estado) => {
@@ -69,8 +74,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   socket.on("estadoDelta", (mudancas) => {
-    // console.log(`[CLIENT] Recebi ${mudancas.length} deltas.`); // Log "barulhento"
-
     const tipos = {
       jogadorNovo: (m) => {
         m.interp_x = m.x;
@@ -83,7 +86,6 @@ document.addEventListener("DOMContentLoaded", () => {
             j.server_x = m.x;
             j.server_y = m.y;
           } else {
-            // Posição de destino para interpolação
             j.x = m.x;
             j.y = m.y;
           }
@@ -96,7 +98,6 @@ document.addEventListener("DOMContentLoaded", () => {
         comida.set(m.id, m);
       },
       comidaRemovida: (m) => {
-        // Agora deve funcionar!
         console.log(`[CLIENT] Removendo comida ${m.id}`);
         comida.delete(m.id);
       },
@@ -117,13 +118,38 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // NOVO: Ouvinte para o Placar de Líderes
+  socket.on("leaderboardUpdate", (top10) => {
+    if (!leaderboardList) return;
+
+    // 1. Limpa a lista antiga
+    leaderboardList.innerHTML = "";
+
+    // 2. Cria os novos itens da lista
+    top10.forEach((jogador) => {
+      const li = document.createElement("li");
+
+      // Encurta o ID para exibição
+      const shortId = jogador.id.substring(0, 5);
+
+      li.textContent = `ID: ${shortId}... P: ${jogador.pontos} (X: ${jogador.x}, Y: ${jogador.y})`;
+
+      // Destaca o jogador atual
+      if (jogador.id === meuSocketId) {
+        li.className = "me";
+      }
+
+      leaderboardList.appendChild(li);
+    });
+  });
+
   // --- 3. Lógica do Jogo (Roda em Ticks fixos) ---
 
   function aplicarPredicaoEInputs() {
+    // ... (função sem mudanças)
     const jogador = jogadores.get(meuSocketId);
     if (!jogador) return;
 
-    // Garante que a posição é um número
     if (isNaN(jogador.x)) {
       jogador.x = canvas.width / 2;
     }
@@ -131,7 +157,6 @@ document.addEventListener("DOMContentLoaded", () => {
       jogador.y = canvas.height / 2;
     }
 
-    // 1. Reconciliação (Corrige desvios)
     if (
       typeof jogador.server_x === "number" &&
       typeof jogador.server_y === "number"
@@ -139,18 +164,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const distX = jogador.server_x - jogador.x;
       const distY = jogador.server_y - jogador.y;
 
-      // O desvio agora deve ser MÍNIMO, só ocorrendo se houver lag.
       if (Math.abs(distX) > 0.1 || Math.abs(distY) > 0.1) {
-        console.log(
-          `[CLIENT] RECONCILIAÇÃO: Desvio de ${distX.toFixed(
-            2
-          )}, ${distY.toFixed(2)}. Corrigindo...`
-        );
-        // Aplica uma correção (LERP)
+        // console.log(`[CLIENT] RECONCILIAÇÃO: Desvio de ${distX.toFixed(2)}, ${distY.toFixed(2)}. Corrigindo...`);
         jogador.x += distX * LERP_FACTOR;
         jogador.y += distY * LERP_FACTOR;
       } else {
-        // Trava na posição e limpa
         jogador.x = jogador.server_x;
         jogador.y = jogador.server_y;
         jogador.server_x = undefined;
@@ -158,7 +176,6 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // 2. Predição (Aplica movimento local)
     let dx = 0;
     let dy = 0;
     if (inputs.ArrowUp) dy -= 1;
@@ -178,27 +195,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  /**
-   * Esta é a nova função principal do "Game Tick" do cliente.
-   * Roda no mesmo ritmo do servidor.
-   */
   function gameTick() {
-    // 1. Processa a lógica do nosso jogador (predição/reconciliação)
     aplicarPredicaoEInputs();
-
-    // 2. Envia os inputs para o servidor
     socket.emit("updateInputs", inputs);
   }
 
   // --- 4. Renderização (Roda o mais rápido possível) ---
 
   function aplicarInterpolacao() {
+    // ... (função sem mudanças)
     for (const jogador of jogadores.values()) {
       if (jogador.id === meuSocketId) {
-        continue; // Não interpolamos nosso próprio jogador
+        continue;
       }
-
-      // Garante que temos posições válidas
       if (isNaN(jogador.x)) {
         jogador.x = canvas.width / 2;
       }
@@ -211,15 +220,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isNaN(jogador.interp_y)) {
         jogador.interp_y = jogador.y;
       }
-
-      // Interpola a posição de *desenho* (interp_x)
-      // em direção à posição de *lógica* (x)
       jogador.interp_x += (jogador.x - jogador.interp_x) * LERP_FACTOR;
       jogador.interp_y += (jogador.y - jogador.interp_y) * LERP_FACTOR;
     }
   }
 
   function desenhar() {
+    // ... (função sem mudanças)
     if (canvas.width === 0 || canvas.height === 0) return;
     const meuJogador = jogadores.get(meuSocketId);
 
@@ -238,44 +245,49 @@ document.addEventListener("DOMContentLoaded", () => {
         meuJogador.x = config.mundoLargura / 2;
         meuJogador.y = config.mundoAltura / 2;
       }
+      const camX = Math.floor(meuJogador.x);
+      const camY = Math.floor(meuJogador.y);
       ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.translate(-meuJogador.x, -meuJogador.y);
+      ctx.translate(-camX, -camY);
     }
 
     for (const itemComida of comida.values()) {
       ctx.fillStyle = itemComida.cor;
-      ctx.fillRect(itemComida.x, itemComida.y, 1, 1);
+      ctx.fillRect(Math.floor(itemComida.x), Math.floor(itemComida.y), 1, 1);
     }
 
     for (const jogador of jogadores.values()) {
       ctx.fillStyle = jogador.cor;
-      let drawX, drawY;
-
+      let drawX;
       if (jogador.id === meuSocketId) {
-        drawX = jogador.x; // Nosso jogador usa a posição predita
+        drawX = jogador.x;
+      } else {
+        drawX = jogador.interp_x;
+      }
+      let drawY;
+      if (jogador.id === meuSocketId) {
         drawY = jogador.y;
       } else {
-        drawX = jogador.interp_x; // Outros usam a posição interpolada
         drawY = jogador.interp_y;
       }
-
       if (!isNaN(drawX) && !isNaN(drawY)) {
-        ctx.fillRect(drawX, drawY, 1, 1);
+        ctx.fillRect(Math.floor(drawX), Math.floor(drawY), 1, 1);
       }
     }
     ctx.restore();
   }
 
-  // --- 5. Iniciar Loops ---
+  // --- 5. Iniciar Loops (Sem mudanças) ---
 
-  // Loop de Lógica (Sincronizado com o Servidor)
   setInterval(gameTick, GAME_TICK_MS);
 
-  // Loop de Renderização (O mais rápido possível)
   function loopRenderizacao() {
-    aplicarInterpolacao(); // Interpola outros jogadores
+    aplicarInterpolacao();
     desenhar();
+
+    // REMOVIDO: O log barulhento de "Outro Jogador"
+
     requestAnimationFrame(loopRenderizacao);
   }
-  requestAnimationFrame(loopRenderizacao); // Inicia o loop de renderização
+  requestAnimationFrame(loopRenderizacao);
 });
