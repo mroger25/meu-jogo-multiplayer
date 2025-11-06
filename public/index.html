@@ -8,16 +8,28 @@
     <link rel="stylesheet" type="text/css" media="screen" href="style.css" />
   </head>
   <body>
-    <div id="game-hud">
-      <div id="score-display">Pontos: 0</div>
-      <div id="leaderboard">
-        <h3>Top 10 Jogadores</h3>
-        <ol id="leaderboard-list"></ol>
+    <div id="login-screen">
+      <div id="login-box">
+        <h1>Meu Jogo Pixel</h1>
+        <input
+          type="text"
+          id="player-name-input"
+          placeholder="Digite seu nome"
+          maxlength="15"
+        />
+        <button id="start-game-button">Jogar</button>
       </div>
     </div>
-
-    <canvas id="game-canvas"></canvas>
-
+    <div id="game-container">
+      <div id="game-hud">
+        <div id="score-display">Pontos: 0</div>
+        <div id="leaderboard">
+          <h3>Top 10 Jogadores</h3>
+          <ol id="leaderboard-list"></ol>
+        </div>
+      </div>
+      <canvas id="game-canvas"></canvas>
+    </div>
     <script src="/socket.io/socket.io.js"></script>
     <script src="client.js"></script>
   </body>

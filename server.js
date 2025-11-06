@@ -41,7 +41,7 @@ function posAleatoria() {
   };
 }
 
-// --- Funções Auxiliares do Grid ---
+// ... (Funções do Grid - sem mudanças) ...
 function getGridKey(x, y) {
   const cellX = Math.floor(x / GRID_CELL_SIZE);
   const cellY = Math.floor(y / GRID_CELL_SIZE);
@@ -140,15 +140,18 @@ function gameLoop() {
         id: jogador.id,
         x: jogador.x,
         y: jogador.y,
+        // Envia o nome em cada movimento para o placar
+        nome: jogador.nome,
       });
 
-      // Lógica de colisão
       const inVicinity = getEntitiesInVicinity(jogador);
       for (const entity of inVicinity) {
         if (!comida.has(entity.id)) continue;
         const itemComida = entity;
         if (checarColisao(jogador, itemComida)) {
-          logInfo(`Jogador ${jogador.id} comeu ${itemComida.id}`);
+          logInfo(
+            `Jogador ${jogador.nome} (${jogador.id}) comeu ${itemComida.id}`
+          );
           comida.delete(itemComida.id);
           removeFromGrid(itemComida);
           mudancas.push({
@@ -184,14 +187,21 @@ function gameLoop() {
     const maxY = jogador.y + VIEWPORT_ALTURA / 2;
 
     const mudancasVisiveis = mudancas.filter((m) => {
-      if (
-        m.tipo === "pontuacaoAtualizada" ||
-        m.tipo === "jogadorNovo" ||
-        m.tipo === "jogadorDesconectou"
-      ) {
+      // Eventos de Placar (pontuação)
+      if (m.tipo === "pontuacaoAtualizada") {
         return true;
       }
 
+      // Eventos de Conexão (jogadorNovo, jogadorDesconectou)
+      if (m.tipo === "jogadorNovo" || m.tipo === "jogadorDesconectou") {
+        // Não envia 'jogadorNovo' para si mesmo (ele já está no estadoInicial)
+        if (m.id === jogador.id && m.tipo === "jogadorNovo") {
+          return false;
+        }
+        return true;
+      }
+
+      // Eventos de mundo (movimento, comida)
       return m.x !== undefined && m.y !== undefined
         ? m.x >= minX && m.x <= maxX && m.y >= minY && m.y <= maxY
         : true;
@@ -212,41 +222,59 @@ function gameLoop() {
 }
 
 io.on("connection", (socket) => {
-  logInfo(`Jogador ${socket.id} conectou.`);
+  logInfo(`Socket ${socket.id} conectou.`);
 
-  const novoJogador = {
-    id: socket.id,
-    ...posAleatoria(),
-    cor: `hsl(${Math.random() * 360}, 70%, 70%)`,
-    inputs: { ArrowUp: !1, ArrowDown: !1, ArrowLeft: !1, ArrowRight: !1 },
-    pontos: 0,
-  };
+  // --- NOVO: Lógica de 'entrarNoJogo' ---
+  socket.on("entrarNoJogo", (dados) => {
+    // Validação e limpeza do nome
+    let nome = "Anônimo";
+    if (dados && typeof dados.nome === "string") {
+      nome = dados.nome.trim().substring(0, 15); // Limita a 15 caracteres
+    }
+    if (nome.length === 0) {
+      nome = "Anônimo";
+    }
 
-  jogadores.set(socket.id, novoJogador);
-  addToGrid(novoJogador);
+    logInfo(`Socket ${socket.id} entrou no jogo como: ${nome}`);
 
-  logInfo(`Enviando 'estadoInicial' para ${socket.id}`);
-  socket.emit("estadoInicial", {
-    jogadores: Array.from(jogadores.values()),
-    comida: Array.from(comida.values()),
-    config: {
-      canvasLargura: CLIENT_CANVAS_LARGURA,
-      canvasAltura: CLIENT_CANVAS_ALTURA,
-      mundoLargura: MUNDO_LARGURA,
-      mundoAltura: MUNDO_ALTURA,
-      velocidadeJogador: VELOCIDADE_JOGADOR,
-    },
+    const novoJogador = {
+      id: socket.id,
+      nome: nome, // Adiciona o nome
+      ...posAleatoria(),
+      cor: `hsl(${Math.random() * 360}, 70%, 70%)`,
+      inputs: { ArrowUp: !1, ArrowDown: !1, ArrowLeft: !1, ArrowRight: !1 },
+      pontos: 0,
+    };
+
+    jogadores.set(socket.id, novoJogador);
+    addToGrid(novoJogador);
+
+    logInfo(`Enviando 'estadoInicial' para ${nome} (${socket.id})`);
+    socket.emit("estadoInicial", {
+      jogadores: Array.from(jogadores.values()),
+      comida: Array.from(comida.values()),
+      config: {
+        canvasLargura: CLIENT_CANVAS_LARGURA,
+        canvasAltura: CLIENT_CANVAS_ALTURA,
+        mundoLargura: MUNDO_LARGURA,
+        mundoAltura: MUNDO_ALTURA,
+        velocidadeJogador: VELOCIDADE_JOGADOR,
+      },
+    });
+
+    // Adiciona na fila segura para notificar OS OUTROS
+    eventosAssincronos.push({
+      tipo: "jogadorNovo",
+      ...novoJogador,
+    });
   });
-
-  eventosAssincronos.push({
-    tipo: "jogadorNovo",
-    ...novoJogador,
-  });
+  // --- Fim da lógica 'entrarNoJogo' ---
 
   socket.on("updateInputs", (inputs) => {
-    logDebug(`Recebido updateInputs de ${socket.id}`);
+    // logDebug(`Recebido updateInputs de ${socket.id}`);
     const jogador = jogadores.get(socket.id);
     if (jogador) {
+      // Só processa inputs se o jogador já "entrou no jogo"
       if (typeof inputs === "object" && inputs !== null) {
         jogador.inputs = inputs;
       } else {
@@ -256,9 +284,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    logInfo(`Jogador ${socket.id} desconectou.`);
     const jogador = jogadores.get(socket.id);
+
+    // Só faz algo se o jogador realmente chegou a "entrar no jogo"
     if (jogador) {
+      logInfo(`Jogador ${jogador.nome} (${socket.id}) desconectou.`);
       removeFromGrid(jogador);
       jogadores.delete(socket.id);
 
@@ -268,6 +298,8 @@ io.on("connection", (socket) => {
         x: jogador.x,
         y: jogador.y,
       });
+    } else {
+      logInfo(`Socket ${socket.id} desconectou (antes de entrar no jogo).`);
     }
   });
 });
@@ -279,13 +311,14 @@ server.listen(PORTA, () => {
   gerarComida(QTD_COMIDA_INICIAL, eventosAssincronos);
   setInterval(() => gameLoop(), GAME_TICK_MS);
 
-  // Loop do Placar
+  // Loop do Placar (MODIFICADO para incluir 'nome')
   setInterval(() => {
     const jogadoresArray = Array.from(jogadores.values());
     jogadoresArray.sort((a, b) => b.pontos - a.pontos);
     const top10 = jogadoresArray.slice(0, 10).map((j) => {
       return {
         id: j.id,
+        nome: j.nome, // Envia o nome
         pontos: j.pontos,
         x: j.x,
         y: j.y,
